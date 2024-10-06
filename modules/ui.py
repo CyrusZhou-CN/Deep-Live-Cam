@@ -5,7 +5,7 @@ from typing import Callable, Tuple
 import cv2
 from cv2_enumerate_cameras import enumerate_cameras  # Add this import
 from PIL import Image, ImageOps
-
+import time
 import modules.globals
 import modules.metadata
 from modules.face_analyser import (
@@ -81,7 +81,7 @@ def init(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.CTk:
 
 
 def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.CTk:
-    global source_label, target_label, status_label
+    global source_label, target_label, status_label, show_fps_switch
 
     ctk.deactivate_automatic_dpi_awareness()
     ctk.set_appearance_mode("system")
@@ -200,6 +200,17 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         command=lambda: setattr(modules.globals, "map_faces", map_faces.get()),
     )
     map_faces_switch.place(relx=0.1, rely=0.75)
+
+    # Add Show FPS switch
+    show_fps_value = ctk.BooleanVar(value=False)
+    show_fps_switch = ctk.CTkSwitch(
+        root,
+        text="Show FPS",
+        variable=show_fps_value,
+        cursor="hand2",
+        command=lambda: setattr(modules.globals, "show_fps", show_fps_value.get()),
+    )
+    show_fps_switch.place(relx=0.6, rely=0.75)
 
     start_button = ctk.CTkButton(
         root, text="Start", cursor="hand2", command=lambda: analyze_target(start, root)
@@ -641,17 +652,17 @@ def update_preview(frame_number: int = 0) -> None:
         PREVIEW.deiconify()
 
 
-def webcam_preview(root: ctk.CTk, camera_index: int):  # Added camera_index parameter
+def webcam_preview(root: ctk.CTk, camera_index: int):
     if not modules.globals.map_faces:
         if modules.globals.source_path is None:
             # No image selected
             return
-        create_webcam_preview(
-            camera_index
-        )  # Pass camera_index to create_webcam_preview
+        create_webcam_preview(camera_index)
     else:
         modules.globals.souce_target_map = []
-        create_source_target_popup_for_webcam(root, modules.globals.souce_target_map)
+        create_source_target_popup_for_webcam(
+            root, modules.globals.souce_target_map, camera_index
+        )
 
 
 def get_available_cameras():
@@ -668,10 +679,10 @@ def get_available_cameras():
     return (camera_indices, camera_names)
 
 
-def create_webcam_preview(camera_index: int):  # Added camera_index parameter
+def create_webcam_preview(camera_index: int):
     global preview_label, PREVIEW
 
-    camera = cv2.VideoCapture(camera_index)  # Use the provided camera index
+    camera = cv2.VideoCapture(camera_index)
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, PREVIEW_DEFAULT_WIDTH)
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, PREVIEW_DEFAULT_HEIGHT)
     camera.set(cv2.CAP_PROP_FPS, 60)
@@ -683,6 +694,8 @@ def create_webcam_preview(camera_index: int):  # Added camera_index parameter
     frame_processors = get_frame_processors_modules(modules.globals.frame_processors)
 
     source_image = None
+    prev_time = time.time()
+    fps = 0
 
     while camera:
         ret, frame = camera.read()
@@ -711,6 +724,22 @@ def create_webcam_preview(camera_index: int):  # Added camera_index parameter
             for frame_processor in frame_processors:
                 temp_frame = frame_processor.process_frame_v2(temp_frame)
 
+        # Calculate and display FPS
+        current_time = time.time()
+        fps = 1 / (current_time - prev_time)
+        prev_time = current_time
+
+        if modules.globals.show_fps:
+            cv2.putText(
+                temp_frame,
+                f"FPS: {fps:.2f}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 255, 0),
+                2,
+            )
+
         image = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(image)
         image = ImageOps.contain(
@@ -727,7 +756,9 @@ def create_webcam_preview(camera_index: int):  # Added camera_index parameter
     PREVIEW.withdraw()
 
 
-def create_source_target_popup_for_webcam(root: ctk.CTk, map: list) -> None:
+def create_source_target_popup_for_webcam(
+    root: ctk.CTk, map: list, camera_index: int
+) -> None:
     global POPUP_LIVE, popup_status_label_live
 
     POPUP_LIVE = ctk.CTkToplevel(root)
@@ -739,9 +770,9 @@ def create_source_target_popup_for_webcam(root: ctk.CTk, map: list) -> None:
         if has_valid_map():
             POPUP_LIVE.destroy()
             simplify_maps()
-            create_webcam_preview()
+            create_webcam_preview(camera_index)
         else:
-            update_pop_live_status("Atleast 1 source with target is required!")
+            update_pop_live_status("At least 1 source with target is required!")
 
     def on_add_click():
         add_blank_map()
