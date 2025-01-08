@@ -10,8 +10,14 @@
 
 <p align="center">
   <img src="media/demo.gif" alt="Demo GIF">
-  <img src="media/avgpcperformancedemo.gif" alt="Performance Demo GIF">
 </p>
+
+## TLDR; Deepfake in 3 Steps!
+![easysteps](https://github.com/user-attachments/assets/af825228-852c-411b-b787-ffd9aac72fc6)
+1. Select a face
+2. Select which camera to use
+3. Press live!
+
 
 ##  Disclaimer
 ###### This software is intended as a productive contribution to the AI-generated media industry. It aims to assist artists with tasks like animating custom characters or using them as models for clothing, etc.
@@ -20,15 +26,18 @@
 
 ###### Users are expected to use this software responsibly and legally. If using a real person's face, obtain their consent and clearly label any output as a deepfake when sharing online. We are not responsible for end-user actions.
 
-## Quick Start - Pre-built
-<div align="center">
-  <a href="https://hacksider.gumroad.com/l/vccdmm">
-    <img src="https://github.com/user-attachments/assets/7d993b32-e3e8-4cd3-bbfb-a549152ebdd5" width="285" height="77" />
-  </a>
-  <a href="https://krshh.gumroad.com/l/Deep-Live-Cam-Mac">
-    <img src="https://github.com/user-attachments/assets/d5d913b5-a7de-4609-96b9-979a5749a703" width="285" height="77" />
-  </a>
-</div>
+## Quick Start - Pre-built (Windows / Nvidia)
+  <a href="https://hacksider.gumroad.com/l/vccdmm"> <img src="https://github.com/user-attachments/assets/7d993b32-e3e8-4cd3-bbfb-a549152ebdd5" width="285" height="77" />
+
+This is the fastest build you can get if you have a discrete NVIDIA GPU.
+
+## Quick Start - Pre-built (Mac / Silicon)
+    
+  <a href="https://krshh.gumroad.com/l/Deep-Live-Cam-Mac"> <img src="https://github.com/user-attachments/assets/d5d913b5-a7de-4609-96b9-979a5749a703" width="285" height="77" />
+  
+This build is for those who are using Mac
+ 
+###### This quickstart is perfect for non-technical users or those who don’t have time to manually install all the requirements. Just a heads-up: this is still an open-source project, so you can also install it manually if you prefer.
 
 ## Features - Everything is real-time
 
@@ -256,6 +265,7 @@ Looking for a CLI mode? Using the -s/--source argument will make the run program
 -   [pereiraroland26](https://github.com/pereiraroland26): Multiple faces support
 -   [vic4key](https://github.com/vic4key): For supporting/contributing to this project
 -   [kier007](https://github.com/kier007): for improving the user experience
+-   [qitianai](https://github.com/qitianai): for multi-lingual support
 -   and [all developers](https://github.com/hacksider/Deep-Live-Cam/graphs/contributors) behind libraries used in this project.
 -   Footnote: Please be informed that the base author of the code is [s0md3v](https://github.com/s0md3v/roop)
 -   All the wonderful users who helped make this project go viral by starring the repo ❤️
