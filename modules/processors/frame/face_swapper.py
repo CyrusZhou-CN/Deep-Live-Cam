@@ -15,6 +15,7 @@ from modules.utilities import (
     is_video,
 )
 from modules.cluster_analysis import find_closest_centroid
+from modules.gpu_processing import gpu_gaussian_blur, gpu_sharpen, gpu_add_weighted, gpu_resize, gpu_cvt_color
 import os
 from collections import deque
 import time
@@ -113,9 +114,16 @@ def get_face_swapper() -> Any:
 
 
 def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
+    """Optimized face swapping with better memory management and performance."""
     face_swapper = get_face_swapper()
     if face_swapper is None:
         update_status("Face swapper model not loaded or failed to load. Skipping swap.", NAME)
+        return temp_frame
+
+    # Safety check for faces
+    if source_face is None or target_face is None:
+        return temp_frame
+    if not hasattr(source_face, 'normed_embedding') or source_face.normed_embedding is None:
         return temp_frame
 
     # Store a copy of the original frame before swapping for opacity blending
@@ -127,9 +135,8 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
 
     # Apply the face swap with optimized memory handling
     try:
-        # For Apple Silicon, use optimized inference
-        if IS_APPLE_SILICON:
-            # Ensure contiguous memory layout for better performance
+        # Ensure contiguous memory layout for better performance on all platforms
+        if not temp_frame.flags['C_CONTIGUOUS']:
             temp_frame = np.ascontiguousarray(temp_frame)
         
         swapped_frame_raw = face_swapper.get(
@@ -152,7 +159,7 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
              # print(f"Warning: Swapped frame shape {swapped_frame_raw.shape} differs from input {temp_frame.shape}.") # Debug
              # Attempt resize (might distort if aspect ratio changed, but better than crashing)
              try:
-                 swapped_frame_raw = cv2.resize(swapped_frame_raw, (temp_frame.shape[1], temp_frame.shape[0]))
+                 swapped_frame_raw = gpu_resize(swapped_frame_raw, (temp_frame.shape[1], temp_frame.shape[0]))
              except Exception as resize_e:
                  # print(f"Error resizing swapped frame: {resize_e}") # Debug
                  return original_frame
@@ -194,34 +201,34 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
                             swapped_frame, target_face, mouth_mask_data
                         )
         
-            # --- Poisson Blending ---
-            if getattr(modules.globals, "poisson_blend", False):
-                face_mask = create_face_mask(target_face, temp_frame)
-                if face_mask is not None:
-                    # Find bounding box of the mask
-                    y_indices, x_indices = np.where(face_mask > 0)
-                    if len(x_indices) > 0 and len(y_indices) > 0:
-                        x_min, x_max = np.min(x_indices), np.max(x_indices)
-                        y_min, y_max = np.min(y_indices), np.max(y_indices)
-        
-                        # Calculate center
-                        center = (int((x_min + x_max) / 2), int((y_min + y_max) / 2))
-        
-                        # Crop src and mask
-                        src_crop = swapped_frame[y_min : y_max + 1, x_min : x_max + 1]
-                        mask_crop = face_mask[y_min : y_max + 1, x_min : x_max + 1]
-        
-                        try:
-                            # Use original_frame as destination to blend the swapped face onto it
-                            swapped_frame = cv2.seamlessClone(
-                                src_crop,
-                                original_frame,
-                                mask_crop,
-                                center,
-                                cv2.NORMAL_CLONE,
-                            )
-                        except Exception as e:
-                            print(f"Poisson blending failed: {e}")
+    # --- Poisson Blending ---
+    if getattr(modules.globals, "poisson_blend", False):
+        face_mask = create_face_mask(target_face, temp_frame)
+        if face_mask is not None:
+            # Find bounding box of the mask
+            y_indices, x_indices = np.where(face_mask > 0)
+            if len(x_indices) > 0 and len(y_indices) > 0:
+                x_min, x_max = np.min(x_indices), np.max(x_indices)
+                y_min, y_max = np.min(y_indices), np.max(y_indices)
+
+                # Calculate center
+                center = (int((x_min + x_max) / 2), int((y_min + y_max) / 2))
+
+                # Crop src and mask
+                src_crop = swapped_frame[y_min : y_max + 1, x_min : x_max + 1]
+                mask_crop = face_mask[y_min : y_max + 1, x_min : x_max + 1]
+
+                try:
+                    # Use original_frame as destination to blend the swapped face onto it
+                    swapped_frame = cv2.seamlessClone(
+                        src_crop,
+                        original_frame,
+                        mask_crop,
+                        center,
+                        cv2.NORMAL_CLONE,
+                    )
+                except Exception as e:
+                    print(f"Poisson blending failed: {e}")
         
             # Apply opacity blend between the original frame and the swapped frame
     opacity = getattr(modules.globals, "opacity", 1.0)
@@ -230,7 +237,7 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
 
     # Blend the original_frame with the (potentially mouth-masked) swapped_frame
     # Ensure both frames are uint8 before blending
-    final_swapped_frame = cv2.addWeighted(original_frame.astype(np.uint8), 1 - opacity, swapped_frame.astype(np.uint8), opacity, 0)
+    final_swapped_frame = gpu_add_weighted(original_frame.astype(np.uint8), 1 - opacity, swapped_frame.astype(np.uint8), opacity, 0)
 
     # Ensure final frame is uint8 after blending (addWeighted should preserve it, but belt-and-suspenders)
     final_swapped_frame = final_swapped_frame.astype(np.uint8)
@@ -306,17 +313,10 @@ def apply_post_processing(current_frame: Frame, swapped_face_bboxes: List[np.nda
             face_region = processed_frame[y1:y2, x1:x2]
             if face_region.size == 0: continue
 
-            # Apply sharpening with optimized parameters for Apple Silicon
+            # Apply sharpening (GPU-accelerated when CUDA OpenCV is available)
             try:
-                # Use smaller sigma for faster processing on Apple Silicon
                 sigma = 2 if IS_APPLE_SILICON else 3
-                blurred = cv2.GaussianBlur(face_region, (0, 0), sigma)
-                sharpened_region = cv2.addWeighted(
-                    face_region, 1.0 + sharpness_value,
-                    blurred, -sharpness_value,
-                    0
-                )
-                sharpened_region = np.clip(sharpened_region, 0, 255).astype(np.uint8)
+                sharpened_region = gpu_sharpen(face_region, strength=sharpness_value, sigma=sigma)
                 processed_frame[y1:y2, x1:x2] = sharpened_region
             except cv2.error:
                 pass
@@ -332,7 +332,7 @@ def apply_post_processing(current_frame: Frame, swapped_face_bboxes: List[np.nda
         if PREVIOUS_FRAME_RESULT is not None and PREVIOUS_FRAME_RESULT.shape == processed_frame.shape and PREVIOUS_FRAME_RESULT.dtype == processed_frame.dtype:
             # Perform interpolation
             try:
-                 final_frame = cv2.addWeighted(
+                 final_frame = gpu_add_weighted(
                     PREVIOUS_FRAME_RESULT, 1.0 - interpolation_weight,
                     processed_frame, interpolation_weight,
                     0
@@ -532,6 +532,7 @@ def process_frames(
 ) -> None:
     """
     Processes a list of frame paths (typically for video).
+    Optimized with better memory management and caching.
     Iterates through frames, applies the appropriate swapping logic based on globals,
     and saves the result back to the frame path. Handles multi-threading via caller.
     """
@@ -555,6 +556,8 @@ def process_frames(
                     if source_face is None:
                         # Specific message for no face detected after successful read
                         update_status(f"Warning: Successfully read source image {source_path}, but no face was detected. Swaps will be skipped.", NAME)
+                    # Free memory immediately after extracting face
+                    del source_img
             except Exception as e:
                 # Print the specific exception caught
                 import traceback
@@ -582,6 +585,7 @@ def process_frames(
         # update_status(f"Processing frame {i+1}/{total_frames}: {os.path.basename(temp_frame_path)}", NAME) # Optional Debug
 
         # Read the target frame
+        temp_frame = None
         try:
             temp_frame = cv2.imread(temp_frame_path)
             if temp_frame is None:
@@ -616,13 +620,19 @@ def process_frames(
             # traceback.print_exc()
             result_frame = temp_frame # Use original frame on processing error
 
-        # Write the result back to the same frame path
+        # Write the result back to the same frame path with optimized compression
         try:
-            write_success = cv2.imwrite(temp_frame_path, result_frame)
+            # Use PNG compression level 3 (faster) instead of default 9
+            write_success = cv2.imwrite(temp_frame_path, result_frame, [cv2.IMWRITE_PNG_COMPRESSION, 3])
             if not write_success:
                 print(f"{NAME}: Error: Failed to write processed frame to {temp_frame_path}")
         except Exception as write_e:
             print(f"{NAME}: Error writing frame {temp_frame_path}: {write_e}")
+        
+        # Free memory immediately after processing
+        del temp_frame
+        if result_frame is not None:
+            del result_frame
 
         # Update progress bar
         if progress:
@@ -736,8 +746,9 @@ def create_lower_mouth_mask(
         return mask, mouth_cutout, mouth_box, lower_lip_polygon
 
     try: # Wrap main logic in try-except
-        #                  0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15 16 17 18 19 20
-        lower_lip_order = [65, 66, 62, 70, 69, 18, 19, 20, 21, 22, 23, 24, 0, 8, 7, 6, 5, 4, 3, 2, 65] # 21 points
+        # Use outer mouth landmarks (52-63) to capture the lips only
+        # This avoids including the chin/jawline, preserving the face shape from the swap
+        lower_lip_order = list(range(52, 64))
 
         # Check if all indices are valid for the loaded landmarks (already partially done by < 106 check)
         if max(lower_lip_order) >= landmarks.shape[0]:
@@ -760,31 +771,6 @@ def create_lower_mouth_mask(
         mask_down_size = getattr(modules.globals, "mask_down_size", 0.1) # Default 0.1
         expansion_factor = 1 + mask_down_size
         expanded_landmarks = (lower_lip_landmarks - center) * expansion_factor + center
-
-        mask_size = getattr(modules.globals, "mask_size", 1.0) # Default 1.0
-        toplip_extension = mask_size * 0.5
-
-        # Define toplip indices relative to lower_lip_order (safer)
-        toplip_local_indices = [0, 1, 2, 3, 4, 5, 19] # Indices in lower_lip_order for [65, 66, 62, 70, 69, 18, 2]
-
-        for idx in toplip_local_indices:
-            if idx < len(expanded_landmarks): # Boundary check
-                direction = expanded_landmarks[idx] - center
-                norm = np.linalg.norm(direction)
-                if norm > 1e-6: # Avoid division by zero
-                   direction_normalized = direction / norm
-                   expanded_landmarks[idx] += direction_normalized * toplip_extension
-
-        # Define chin indices relative to lower_lip_order
-        chin_local_indices = [9, 10, 11, 12, 13, 14] # Indices for [22, 23, 24, 0, 8, 7]
-        chin_extension = 2 * 0.2
-
-        for idx in chin_local_indices:
-            if idx < len(expanded_landmarks): # Boundary check
-               # Extend vertically based on distance from center y
-               y_diff = expanded_landmarks[idx][1] - center[1]
-               expanded_landmarks[idx][1] += y_diff * chin_extension
-
 
         # Ensure landmarks are finite after adjustments
         if not np.all(np.isfinite(expanded_landmarks)):
@@ -821,10 +807,10 @@ def create_lower_mouth_mask(
             # Draw polygon on the ROI mask
             cv2.fillPoly(mask_roi, [polygon_relative_to_roi], 255)
 
-            # Apply Gaussian blur (ensure kernel size is odd and positive)
+            # Apply Gaussian blur (GPU-accelerated when available)
             blur_k_size = getattr(modules.globals, "mask_blur_kernel", 15) # Default 15
             blur_k_size = max(1, blur_k_size // 2 * 2 + 1) # Ensure odd
-            mask_roi = cv2.GaussianBlur(mask_roi, (blur_k_size, blur_k_size), 0) # Sigma=0 calculates from kernel
+            mask_roi = gpu_gaussian_blur(mask_roi, (blur_k_size, blur_k_size), 0)
 
             # Place the mask ROI in the full-sized mask
             mask[min_y:max_y, min_x:max_x] = mask_roi
@@ -960,7 +946,7 @@ def apply_mouth_area(
         if roi.shape[:2] != mouth_cutout.shape[:2]:
              # Check if mouth_cutout has valid dimensions before resizing
              if mouth_cutout.shape[0] > 0 and mouth_cutout.shape[1] > 0:
-                 resized_mouth_cutout = cv2.resize(mouth_cutout, (box_width, box_height), interpolation=cv2.INTER_LINEAR)
+                  resized_mouth_cutout = gpu_resize(mouth_cutout, (box_width, box_height), interpolation=cv2.INTER_LINEAR)
              else:
                  # print("Warning: mouth_cutout has invalid dimensions, cannot resize.")
                  return frame # Cannot proceed without valid cutout
@@ -1084,13 +1070,43 @@ def create_face_mask(face: Face, frame: Frame) -> np.ndarray:
         landmarks_int = landmarks.astype(np.int32)
 
         # Use standard face outline landmarks (0-32)
-        face_outline_points = landmarks_int[0:33] # Points 0 to 32 cover chin and sides
+        # Use standard face outline (0-32)
+        face_outline = landmarks_int[0:33]
 
+        # Estimate forehead points to ensure mask covers the whole face (including forehead)
+        # This is critical for Poisson blending to work correctly on the forehead
+        eyebrows = landmarks_int[33:43]
+        if eyebrows.shape[0] > 0:
+            chin = landmarks_int[16]
+            eyebrow_center = np.mean(eyebrows, axis=0)
+            
+            # Vector from chin to eyebrows (upwards)
+            up_vector = eyebrow_center - chin
+            norm = np.linalg.norm(up_vector)
+            if norm > 0:
+                up_vector /= norm
+                
+                # Extend upwards by 1.0 of the chin-to-eyebrow distance (aggressive coverage)
+                # This ensures the mask covers the entire forehead for proper blending
+                forehead_offset = up_vector * (norm * 1.0)
+                
+                # Shift eyebrows up to create forehead points
+                forehead_points = eyebrows + forehead_offset
+                
+                # Expand the top points slightly outwards to cover forehead corners
+                # Calculate the center of the new top points
+                top_center = np.mean(forehead_points, axis=0)
+                
+                # Expand outwards by 20%
+                forehead_points = (forehead_points - top_center) * 1.2 + top_center
+                
+                # Combine outline and forehead points
+                face_outline = np.concatenate((face_outline, forehead_points.astype(np.int32)), axis=0)
 
         # Calculate convex hull of these points
         # Use try-except as convexHull can fail on degenerate input
         try:
-             hull = cv2.convexHull(full_face_poly.astype(np.float32)) # Use float for accuracy
+             hull = cv2.convexHull(face_outline.astype(np.float32)) # Use float for accuracy
              if hull is None or len(hull) < 3:
                  # print("Warning: Convex hull calculation failed or returned too few points.")
                  # Fallback: use bounding box of landmarks? Or just return empty mask?
@@ -1103,14 +1119,10 @@ def create_face_mask(face: Face, frame: Frame) -> np.ndarray:
              return mask # Return empty mask on error
 
 
-        # Apply Gaussian blur to feather the mask edges
-        # Kernel size should be reasonably large, odd, and positive
+        # Apply Gaussian blur to feather the mask edges (GPU-accelerated when available)
         blur_k_size = getattr(modules.globals, "face_mask_blur", 31) # Default 31
         blur_k_size = max(1, blur_k_size // 2 * 2 + 1) # Ensure odd and positive
-
-        # Use sigma=0 to let OpenCV calculate from kernel size
-        # Apply blur to the uint8 mask directly
-        mask = cv2.GaussianBlur(mask, (blur_k_size, blur_k_size), 0)
+        mask = gpu_gaussian_blur(mask, (blur_k_size, blur_k_size), 0)
 
         # --- Optional: Return float mask for apply_mouth_area ---
         # mask = mask.astype(float) / 255.0
