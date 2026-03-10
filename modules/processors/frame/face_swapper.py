@@ -44,11 +44,21 @@ models_dir = os.path.join(
 )
 
 def pre_check() -> bool:
-    download_directory_path = abs_dir
+    # Use models_dir instead of abs_dir to save to the correct location
+    download_directory_path = models_dir
+    
+    # Make sure the models directory exists, catch permission errors if they occur
+    try:
+        os.makedirs(download_directory_path, exist_ok=True)
+    except OSError as e:
+        logging.error(f"Failed to create directory {download_directory_path} due to permission error: {e}")
+        return False
+    
+    # Use the direct download URL from Hugging Face
     conditional_download(
         download_directory_path,
         [
-            "https://huggingface.co/hacksider/deep-live-cam/blob/main/inswapper_128_fp16.onnx"
+            "https://huggingface.co/hacksider/deep-live-cam/resolve/main/inswapper_128_fp16.onnx"
         ],
     )
     return True
@@ -127,7 +137,9 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
         return temp_frame
 
     # Store a copy of the original frame before swapping for opacity blending
-    original_frame = temp_frame.copy()
+    opacity = getattr(modules.globals, "opacity", 1.0)
+    opacity = max(0.0, min(1.0, opacity))
+    original_frame = temp_frame if opacity >= 1.0 else temp_frame.copy()
 
     # Pre-swap Input Check with optimization
     if temp_frame.dtype != np.uint8:
@@ -230,19 +242,13 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
                 except Exception as e:
                     print(f"Poisson blending failed: {e}")
         
-            # Apply opacity blend between the original frame and the swapped frame
-    opacity = getattr(modules.globals, "opacity", 1.0)
-    # Ensure opacity is within valid range [0.0, 1.0]
-    opacity = max(0.0, min(1.0, opacity))
+    # Apply opacity blend between the original frame and the swapped frame
+    if opacity >= 1.0:
+        return swapped_frame.astype(np.uint8)
 
     # Blend the original_frame with the (potentially mouth-masked) swapped_frame
-    # Ensure both frames are uint8 before blending
     final_swapped_frame = gpu_add_weighted(original_frame.astype(np.uint8), 1 - opacity, swapped_frame.astype(np.uint8), opacity, 0)
-
-    # Ensure final frame is uint8 after blending (addWeighted should preserve it, but belt-and-suspenders)
-    final_swapped_frame = final_swapped_frame.astype(np.uint8)
-
-    return final_swapped_frame
+    return final_swapped_frame.astype(np.uint8)
 
 
 # --- START: Mac M1-M5 Optimized Face Detection ---
@@ -353,10 +359,8 @@ def apply_post_processing(current_frame: Frame, swapped_face_bboxes: List[np.nda
                 pass
             PREVIOUS_FRAME_RESULT = processed_frame.copy()
     else:
-         # If interpolation is off or weight is invalid, just use the current frame
-         # Update state with the current (potentially sharpened) frame
-         # Reset previous frame state if interpolation was just turned off or weight is invalid
-         PREVIOUS_FRAME_RESULT = processed_frame.copy()
+         # Interpolation is off or weight is invalid — no need to cache
+         PREVIOUS_FRAME_RESULT = None
 
 
     return final_frame
@@ -994,7 +998,7 @@ def apply_mouth_area(
         feather_amount = max(1, min(30, feather_base_dim // max(1, mask_feather_ratio))) # Avoid div by zero
         # Ensure kernel size is odd and positive
         kernel_size = 2 * feather_amount + 1
-        feathered_polygon_mask = cv2.GaussianBlur(polygon_mask_roi.astype(float), (kernel_size, kernel_size), 0)
+        feathered_polygon_mask = cv2.GaussianBlur(polygon_mask_roi.astype(np.float32), (kernel_size, kernel_size), 0)
 
         # Normalize feathered mask to [0.0, 1.0] range
         max_val = feathered_polygon_mask.max()
@@ -1009,9 +1013,9 @@ def apply_mouth_area(
         # Get the corresponding ROI from the *full face mask* (already blurred)
         # Ensure face_mask is float and normalized [0.0, 1.0]
         if face_mask.dtype != np.float64 and face_mask.dtype != np.float32:
-            face_mask_float = face_mask.astype(float) / 255.0
+            face_mask_float = face_mask.astype(np.float32) / 255.0
         else: # Assume already float [0,1] if type is float
-            face_mask_float = face_mask
+            face_mask_float = face_mask.astype(np.float32) if face_mask.dtype == np.float64 else face_mask
         face_mask_roi = face_mask_float[min_y:max_y, min_x:max_x]
 
         # Combine the feathered mouth polygon mask with the face mask ROI
@@ -1023,14 +1027,14 @@ def apply_mouth_area(
         if len(frame.shape) == 3 and frame.shape[2] == 3:
             combined_mask_3channel = combined_mask[:, :, np.newaxis]
 
-            # Ensure data types are compatible for blending (float or double for mask, uint8 for images)
-            color_corrected_mouth_uint8 = color_corrected_mouth.astype(np.uint8)
-            roi_uint8 = roi.astype(np.uint8)
-            combined_mask_float = combined_mask_3channel.astype(np.float64) # Use float64 for precision in mask
+            # Ensure data types are compatible for blending
+            # float32 provides sufficient precision for 8-bit image blending
+            combined_mask_f32 = combined_mask_3channel.astype(np.float32)
+            inv_mask = np.float32(1.0) - combined_mask_f32
 
             # Blend: (original_mouth * combined_mask) + (swapped_face_roi * (1 - combined_mask))
-            blended_roi = (color_corrected_mouth_uint8 * combined_mask_float +
-                           roi_uint8 * (1.0 - combined_mask_float))
+            blended_roi = (color_corrected_mouth * combined_mask_f32 +
+                           roi * inv_mask)
 
             # Place the blended ROI back into the frame
             frame[min_y:max_y, min_x:max_x] = blended_roi.astype(np.uint8)

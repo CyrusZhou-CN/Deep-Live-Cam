@@ -11,7 +11,11 @@ import platform
 import signal
 import shutil
 import argparse
-import torch
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 import onnxruntime
 import tensorflow
 
@@ -21,11 +25,12 @@ import modules.ui as ui
 from modules.processors.frame.core import get_frame_processors_modules
 from modules.utilities import has_image_extension, is_image, is_video, detect_fps, create_video, extract_frames, get_temp_frame_paths, restore_audio, create_temp, move_temp, clean_temp, normalize_output_path
 
-if 'ROCMExecutionProvider' in modules.globals.execution_providers:
+if HAS_TORCH and 'ROCMExecutionProvider' in modules.globals.execution_providers:
     del torch
 
 warnings.filterwarnings('ignore', category=FutureWarning, module='insightface')
-warnings.filterwarnings('ignore', category=UserWarning, module='torchvision')
+if HAS_TORCH:
+    warnings.filterwarnings('ignore', category=UserWarning, module='torchvision')
 
 
 def parse_args() -> None:
@@ -34,7 +39,7 @@ def parse_args() -> None:
     program.add_argument('-s', '--source', help='select an source image', dest='source_path')
     program.add_argument('-t', '--target', help='select an target image or video', dest='target_path')
     program.add_argument('-o', '--output', help='select output file or directory', dest='output_path')
-    program.add_argument('--frame-processor', help='pipeline of frame processors', dest='frame_processor', default=['face_swapper'], choices=['face_swapper', 'face_enhancer'], nargs='+')
+    program.add_argument('--frame-processor', help='pipeline of frame processors', dest='frame_processor', default=['face_swapper'], choices=['face_swapper', 'face_enhancer', 'face_enhancer_gpen256', 'face_enhancer_gpen512'], nargs='+')
     program.add_argument('--keep-fps', help='keep original fps', dest='keep_fps', action='store_true', default=False)
     program.add_argument('--keep-audio', help='keep original audio', dest='keep_audio', action='store_true', default=True)
     program.add_argument('--keep-frames', help='keep temporary frames', dest='keep_frames', action='store_true', default=False)
@@ -81,11 +86,9 @@ def parse_args() -> None:
     modules.globals.execution_threads = args.execution_threads
     modules.globals.lang = args.lang
 
-    #for ENHANCER tumbler:
-    if 'face_enhancer' in args.frame_processor:
-        modules.globals.fp_ui['face_enhancer'] = True
-    else:
-        modules.globals.fp_ui['face_enhancer'] = False
+    #for ENHANCER tumblers:
+    for enhancer_key in ('face_enhancer', 'face_enhancer_gpen256', 'face_enhancer_gpen512'):
+        modules.globals.fp_ui[enhancer_key] = enhancer_key in args.frame_processor
 
     # translate deprecated args
     if args.source_path_deprecated:
@@ -167,7 +170,7 @@ def limit_resources() -> None:
 
 
 def release_resources() -> None:
-    if 'CUDAExecutionProvider' in modules.globals.execution_providers:
+    if 'CUDAExecutionProvider' in modules.globals.execution_providers and HAS_TORCH:
         torch.cuda.empty_cache()
 
 
