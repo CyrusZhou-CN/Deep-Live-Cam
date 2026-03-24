@@ -1,4 +1,4 @@
-<h1 align="center">Deep-Live-Cam 2.0.5c</h1>
+<h1 align="center">Deep-Live-Cam 2.1</h1>
 
 <p align="center">
   Real-time face swap and video deepfake with a single click and only a single image.
@@ -30,11 +30,11 @@ By using this software, you agree to these terms and commit to using it in a man
 
 Users are expected to use this software responsibly and legally. If using a real person's face, obtain their consent and clearly label any output as a deepfake when sharing online. We are not responsible for end-user actions.
 
-## Exclusive v2.6d Quick Start - Pre-built (Windows/Mac Silicon)
+## Exclusive v2.7 beta Quick Start - Pre-built (Windows/Mac Silicon/CPU)
 
   <a href="https://deeplivecam.net/index.php/quickstart"> <img src="media/Download.png" width="285" height="77" />
 
-##### This is the fastest build you can get if you have a discrete NVIDIA or AMD GPU or Mac Silicon, And you'll receive special priority support.
+##### This is the fastest build you can get if you have a discrete NVIDIA or AMD GPU, CPU or Mac Silicon, And you'll receive special priority support. 2.7 beta is the best you can have with 30+ extra features than the open source version.
  
 ###### These Pre-builts are perfect for non-technical users or those who don't have time to, or can't manually install all the requirements. Just a heads-up: this is an open-source project, so you can also install it manually. 
 
@@ -308,6 +308,9 @@ python run.py --execution-provider openvino
 -   Wait for the preview to appear (10-30 seconds).
 -   Use a screen capture tool like OBS to stream.
 -   To change the face, select a new source image.
+
+## Download all models in this huggingface link
+- [**Download models here**](https://huggingface.co/hacksider/deep-live-cam/tree/main)
 
 ## Command Line Arguments (Unmaintained)
 
