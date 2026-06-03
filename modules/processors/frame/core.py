@@ -37,6 +37,7 @@ def load_frame_processor_module(frame_processor: str) -> Any:
         frame_processor_module = importlib.import_module(f'modules.processors.frame.{frame_processor}')
         for method_name in FRAME_PROCESSORS_INTERFACE:
             if not hasattr(frame_processor_module, method_name):
+                print(f"Frame processor {frame_processor} is missing required method {method_name}")
                 sys.exit()
     except ImportError:
         print(f"Frame processor {frame_processor} not found")
@@ -59,7 +60,7 @@ def set_frame_processors_modules_from_ui(frame_processors: List[str]) -> None:
     current_processor_names = [proc.__name__.split('.')[-1] for proc in FRAME_PROCESSORS_MODULES]
 
     for frame_processor, state in modules.globals.fp_ui.items():
-        if state == True and frame_processor not in current_processor_names:
+        if state and frame_processor not in current_processor_names:
             try:
                 frame_processor_module = load_frame_processor_module(frame_processor)
                 FRAME_PROCESSORS_MODULES.append(frame_processor_module)
@@ -70,7 +71,7 @@ def set_frame_processors_modules_from_ui(frame_processors: List[str]) -> None:
             except Exception as e:
                  print(f"Warning: Error loading frame processor {frame_processor} requested by UI state: {e}")
 
-        elif state == False and frame_processor in current_processor_names:
+        elif not state and frame_processor in current_processor_names:
             try:
                 module_to_remove = next((mod for mod in FRAME_PROCESSORS_MODULES if mod.__name__.endswith(f'.{frame_processor}')), None)
                 if module_to_remove:
@@ -331,6 +332,14 @@ def _run_pipe_pipeline(
                 'mode': 'in-memory',
             })
 
+            # Pipelined detection: while processing frame N (swap on
+            # ANE), start detecting the face in the next frame
+            # (detection on GPU).  They use different hardware units
+            # so the work overlaps.
+            detect_executor = ThreadPoolExecutor(max_workers=1)
+            pending_detect = None
+            use_pipeline = not modules.globals.many_faces
+
             while True:
                 raw = reader.stdout.read(frame_size)
                 if len(raw) != frame_size:
@@ -340,25 +349,35 @@ def _run_pipe_pipeline(
                     (height, width, 3)
                 ).copy()
 
-                # Detect target face once and share across all processors.
-                # This eliminates the redundant detection that each
-                # processor would otherwise do internally.
-                if not modules.globals.many_faces:
-                    target_face = get_one_face(frame)
+                # Get the detection result for THIS frame
+                if use_pipeline:
+                    if pending_detect is not None:
+                        target_face = pending_detect.result()
+                    else:
+                        target_face = get_one_face(frame)
+                    # Start detecting on THIS frame eagerly — the result
+                    # will be used for the next iteration.  At video
+                    # frame rates the face barely moves between frames.
+                    # Hand the detector its own copy: the frame processors
+                    # below mutate `frame` in place (paste-back), which
+                    # would otherwise race with detection.
+                    pending_detect = detect_executor.submit(
+                        get_one_face, frame.copy())
                 else:
-                    target_face = None  # many_faces mode detects all internally
+                    target_face = None
 
                 # Run frame through every active processor
                 for fp in frame_processors:
                     try:
                         frame = fp.process_frame(source_face, frame, target_face=target_face)
                     except TypeError:
-                        # Processor doesn't accept target_face kwarg
                         frame = fp.process_frame(source_face, frame)
 
                 writer.stdin.write(frame.tobytes())
                 processed_count += 1
                 progress.update(1)
+
+            detect_executor.shutdown(wait=True)
 
         # Graceful shutdown
         writer.stdin.close()
