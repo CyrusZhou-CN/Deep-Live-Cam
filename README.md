@@ -30,7 +30,7 @@ By using this software, you agree to these terms and commit to using it in a man
 
 Users are expected to use this software responsibly and legally. If using a real person's face, obtain their consent and clearly label any output as a deepfake when sharing online. We are not responsible for end-user actions.
 
-## Pre-built Deep-Live-Cam 2.7.5 Ultimate!
+## Pre-built Deep-Live-Cam 2.8 Ultimate!
 
 <p align="center">
   <a href="https://deeplivecam.net/index.php/quickstart">
@@ -307,7 +307,7 @@ pip install onnxruntime-directml==1.21.0
 2. Usage:
 
 ```bash
-python run.py --execution-provider directml
+python run.py --execution-provider dml
 ```
 
 **OpenVINO™ Execution Provider (Intel)**
